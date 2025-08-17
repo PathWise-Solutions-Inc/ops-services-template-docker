@@ -1,0 +1,324 @@
+{
+  "name": "Document Ingestion - Hybrid RAG",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "90a52b02-7c54-4cfa-97e0-8a6e1ab8e001",
+      "name": "Start",
+      "type": "n8n-nodes-base.start",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ingest-document",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "webhook-001",
+      "name": "Document Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ],
+      "webhookId": "doc-ingest-webhook"
+    },
+    {
+      "parameters": {
+        "operation": "extractDocument",
+        "documentFormat": "autoDetect",
+        "extractionMode": "all",
+        "options": {
+          "includeMetadata": true
+        }
+      },
+      "id": "extract-001",
+      "name": "Extract Document Content",
+      "type": "n8n-nodes-base.extractDocument",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "document",
+        "operation": "create",
+        "content": "={{$node['Extract Document Content'].json['content']}}",
+        "metadata": {
+          "source": "={{$node['Document Webhook'].json['source']}}",
+          "timestamp": "={{$now}}",
+          "document_type": "={{$node['Document Webhook'].json['type']}}",
+          "tags": "={{$node['Document Webhook'].json['tags']}}"
+        }
+      },
+      "id": "lightrag-001",
+      "name": "Send to LightRAG",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        850,
+        200
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "lightrag-api-credentials",
+          "name": "LightRAG API"
+        }
+      },
+      "parameters": {
+        "url": "http://lightrag:8080/ingest",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "content",
+              "value": "={{$node['Extract Document Content'].json['content']}}"
+            },
+            {
+              "name": "metadata",
+              "value": "={{$node['Extract Document Content'].json['metadata']}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "vectorStore",
+        "operation": "insert",
+        "tableName": "documents",
+        "data": {
+          "content": "={{$node['Extract Document Content'].json['content']}}",
+          "embedding": "={{$node['Generate Embeddings'].json['embedding']}}",
+          "metadata": "={{$node['Extract Document Content'].json['metadata']}}"
+        }
+      },
+      "id": "supabase-001",
+      "name": "Store in Supabase Vector DB",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        850,
+        400
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "text": "={{$node['Extract Document Content'].json['content']}}",
+        "options": {
+          "dimensions": 1536
+        }
+      },
+      "id": "openai-001",
+      "name": "Generate Embeddings",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        650,
+        500
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "status",
+              "value": "success"
+            },
+            {
+              "name": "document_id",
+              "value": "={{$node['LightRAG'].json['document_id']}}"
+            },
+            {
+              "name": "entities_extracted",
+              "value": "={{$node['LightRAG'].json['entities_extracted']}}"
+            },
+            {
+              "name": "vector_stored",
+              "value": "={{$node['Supabase'].json['success']}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "response-001",
+      "name": "Prepare Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$node['Document Webhook'].json['store_vector']}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-001",
+      "name": "Check Vector Storage",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        650,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "error",
+              "value": "={{$node['Send to LightRAG'].json['error'] || $node['Store in Supabase Vector DB'].json['error']}}"
+            },
+            {
+              "name": "status",
+              "value": "error"
+            }
+          ]
+        }
+      },
+      "id": "error-001",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Document Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Document Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Document Content": {
+      "main": [
+        [
+          {
+            "node": "Send to LightRAG",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Vector Storage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Vector Storage": {
+      "main": [
+        [
+          {
+            "node": "Generate Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Store in Supabase Vector DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to LightRAG": {
+      "main": [
+        [
+          {
+            "node": "Prepare Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Supabase Vector DB": {
+      "main": [
+        [
+          {
+            "node": "Prepare Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "any",
+    "errorWorkflow": "error-notification-workflow"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "id": "rag-template",
+      "name": "RAG Template"
+    },
+    {
+      "id": "document-ingestion",
+      "name": "Document Ingestion"
+    }
+  ],
+  "triggerCount": 0,
+  "updatedAt": "2025-08-17T23:30:00.000Z",
+  "versionId": "1"
+}

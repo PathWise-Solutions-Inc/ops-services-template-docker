@@ -1,0 +1,392 @@
+{
+  "name": "Hybrid RAG Search",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "search",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-search-001",
+      "name": "Search Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        400
+      ],
+      "webhookId": "hybrid-search-webhook"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "query",
+              "value": "={{$node['Search Webhook'].json['query']}}"
+            },
+            {
+              "name": "search_type",
+              "value": "={{$node['Search Webhook'].json['search_type'] || 'hybrid'}}"
+            },
+            {
+              "name": "top_k",
+              "value": "={{$node['Search Webhook'].json['top_k'] || 5}}"
+            }
+          ]
+        }
+      },
+      "id": "prepare-001",
+      "name": "Prepare Search Query",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        450,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "text": "={{$node['Prepare Search Query'].json['query']}}",
+        "options": {
+          "dimensions": 1536
+        }
+      },
+      "id": "openai-embed-001",
+      "name": "Generate Query Embedding",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "vectorSearch",
+        "operation": "search",
+        "tableName": "documents",
+        "embedding": "={{$node['Generate Query Embedding'].json['embedding']}}",
+        "limit": "={{$node['Prepare Search Query'].json['top_k']}}",
+        "threshold": 0.7
+      },
+      "id": "vector-search-001",
+      "name": "Vector Search (Supabase)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "http://lightrag:8080/query",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "query",
+              "value": "={{$node['Prepare Search Query'].json['query']}}"
+            },
+            {
+              "name": "top_k",
+              "value": "={{$node['Prepare Search Query'].json['top_k']}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "graph-search-001",
+      "name": "Graph Search (LightRAG)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        850,
+        500
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "lightrag-api-credentials",
+          "name": "LightRAG API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$node['Prepare Search Query'].json['search_type']}}",
+              "operation": "equals",
+              "value2": "vector"
+            }
+          ]
+        }
+      },
+      "id": "router-001",
+      "name": "Search Type Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        650,
+        400
+      ],
+      "outputs": 3
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "multiplex",
+        "options": {}
+      },
+      "id": "merge-001",
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        1050,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Combine and rank results from both vector and graph search\nconst vectorResults = $input.all()[0].json.results || [];\nconst graphResults = $input.all()[1].json.results || [];\n\n// Create a map to track unique results\nconst resultMap = new Map();\n\n// Add vector search results with weight\nvectorResults.forEach(result => {\n  const key = result.id || result.content.substring(0, 50);\n  if (!resultMap.has(key)) {\n    resultMap.set(key, {\n      ...result,\n      score: result.score * 0.5, // Weight for vector search\n      source: 'vector'\n    });\n  }\n});\n\n// Add graph search results with weight\ngraphResults.forEach(result => {\n  const key = result.id || result.content.substring(0, 50);\n  if (resultMap.has(key)) {\n    // Combine scores if result exists in both\n    const existing = resultMap.get(key);\n    existing.score += result.score * 0.5; // Weight for graph search\n    existing.source = 'hybrid';\n  } else {\n    resultMap.set(key, {\n      ...result,\n      score: result.score * 0.5,\n      source: 'graph'\n    });\n  }\n});\n\n// Sort by combined score\nconst combinedResults = Array.from(resultMap.values())\n  .sort((a, b) => b.score - a.score)\n  .slice(0, parseInt($node['Prepare Search Query'].json['top_k']));\n\nreturn {\n  query: $node['Prepare Search Query'].json['query'],\n  results: combinedResults,\n  search_type: 'hybrid',\n  total_results: combinedResults.length,\n  sources: {\n    vector_count: vectorResults.length,\n    graph_count: graphResults.length\n  }\n};"
+      },
+      "id": "rank-001",
+      "name": "Rank Hybrid Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-3.5-turbo",
+        "messages": {
+          "messageItems": [
+            {
+              "role": "system",
+              "content": "You are a helpful assistant that provides accurate answers based on the search results provided. Always cite the sources of your information."
+            },
+            {
+              "role": "user",
+              "content": "Query: {{$node['Prepare Search Query'].json['query']}}\n\nSearch Results:\n{{$node['Rank Hybrid Results'].json['results']}}\n\nPlease provide a comprehensive answer based on these search results."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500
+        }
+      },
+      "id": "augment-001",
+      "name": "Augment Response",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        400
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "query",
+              "value": "={{$node['Prepare Search Query'].json['query']}}"
+            },
+            {
+              "name": "answer",
+              "value": "={{$node['Augment Response'].json['message']}}"
+            },
+            {
+              "name": "search_type",
+              "value": "={{$node['Rank Hybrid Results'].json['search_type']}}"
+            },
+            {
+              "name": "sources",
+              "value": "={{$node['Rank Hybrid Results'].json['results']}}"
+            },
+            {
+              "name": "metadata",
+              "value": "={{$node['Rank Hybrid Results'].json['sources']}}"
+            }
+          ]
+        }
+      },
+      "id": "format-001",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Search Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Search Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Search Query": {
+      "main": [
+        [
+          {
+            "node": "Search Type Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Type Router": {
+      "main": [
+        [
+          {
+            "node": "Generate Query Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Graph Search (LightRAG)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Query Embedding",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Graph Search (LightRAG)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Query Embedding": {
+      "main": [
+        [
+          {
+            "node": "Vector Search (Supabase)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector Search (Supabase)": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Graph Search (LightRAG)": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [
+          {
+            "node": "Rank Hybrid Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rank Hybrid Results": {
+      "main": [
+        [
+          {
+            "node": "Augment Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Augment Response": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "any"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "id": "rag-template",
+      "name": "RAG Template"
+    },
+    {
+      "id": "hybrid-search",
+      "name": "Hybrid Search"
+    }
+  ],
+  "triggerCount": 0,
+  "updatedAt": "2025-08-17T23:35:00.000Z",
+  "versionId": "1"
+}

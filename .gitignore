@@ -1,0 +1,66 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Volume data
+volumes/n8n/*
+volumes/postgres/*
+volumes/redis/*
+volumes/lightrag/*
+!volumes/README.md
+
+# n8n data
+n8n-credentials/*
+!n8n-credentials/.gitkeep
+n8n-workflows/*.json.backup
+
+# Logs
+*.log
+nginx/logs/*
+!nginx/logs/.gitkeep
+
+# SSL certificates
+nginx/ssl/*.pem
+nginx/ssl/*.key
+nginx/ssl/*.crt
+!nginx/ssl/README.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+.venv/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Docker
+docker-compose.local.yml
+
+# Backup files
+*.backup
+*.bak
+*.tmp
+
+# Test data
+test-documents/*.pdf
+test-documents/*.docx
+test-documents/*.txt
+!test-documents/sample.txt

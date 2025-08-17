@@ -1,0 +1,16 @@
+# Test runner Docker image
+FROM python:3.11-slim
+
+WORKDIR /tests
+
+# Install dependencies
+RUN pip install --no-cache-dir requests pytest
+
+# Copy test files
+COPY test_rag_pipeline.py .
+
+# Set environment variables for container network
+ENV LIGHTRAG_API_URL=http://lightrag:8081
+
+# Run tests
+CMD ["python", "test_rag_pipeline.py"]

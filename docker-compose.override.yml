@@ -1,0 +1,56 @@
+version: '3.8'
+
+# Development overrides for local development
+# This file is automatically loaded by docker-compose
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - ./supabase/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+
+  n8n:
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - NODE_ENV=development
+      - N8N_LOG_LEVEL=debug
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_ON_PROGRESS=true
+    volumes:
+      - ./n8n-workflows:/home/node/.n8n/workflows
+      - ./n8n-credentials:/home/node/.n8n/credentials
+
+  lightrag:
+    environment:
+      - LIGHTRAG_LOG_LEVEL=DEBUG
+      - LIGHTRAG_RELOAD=true
+    volumes:
+      - ./lightrag:/app/lightrag:ro
+      - ./test-documents:/app/test-documents:ro
+
+  redis:
+    command: redis-server --requirepass redis --loglevel debug
+
+  nginx:
+    volumes:
+      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/logs:/var/log/nginx
+
+  prometheus:
+    ports:
+      - "9090:9090"
+    environment:
+      - --log.level=debug
+
+  grafana:
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_LOG_LEVEL=debug

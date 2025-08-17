@@ -1,0 +1,35 @@
+Introduction to LightRAG
+
+LightRAG is a graph-enhanced retrieval system designed for building sophisticated RAG 
+(Retrieval-Augmented Generation) applications. It combines the power of vector search 
+with graph-based knowledge representation.
+
+Key Features:
+1. Entity and relationship extraction
+2. Multi-modal document support
+3. Hybrid search capabilities
+4. PostgreSQL backend support
+5. Real-time knowledge graph updates
+
+Use Cases:
+- Question answering systems
+- Document intelligence
+- Knowledge management
+- Semantic search applications
+
+Technical Architecture:
+LightRAG uses a dual-storage approach combining vector embeddings for semantic search
+with graph structures for relationship-based queries. This hybrid approach enables
+both fast similarity search and complex graph traversals.
+
+Integration with n8n:
+The system integrates seamlessly with n8n workflows, allowing automated document
+processing pipelines. Workflows can trigger document ingestion, perform queries,
+and route results to downstream services.
+
+Benefits:
+- Improved retrieval accuracy through graph context
+- Support for complex multi-hop queries
+- Scalable architecture with PostgreSQL backend
+- Real-time updates without reindexing
+- Cost-effective compared to pure vector solutions

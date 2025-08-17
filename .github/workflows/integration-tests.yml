@@ -1,0 +1,242 @@
+name: RAG Pipeline Integration Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - basic
+          - advanced
+          - performance
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        test-suite: [basic, advanced]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pytest
+    
+    - name: Create .env file
+      run: |
+        cp .env.example .env.local
+        # Add any necessary secrets from GitHub Secrets
+        echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env.local
+    
+    - name: Start services
+      run: |
+        docker-compose up -d
+        # Wait for services to be ready
+        sleep 30
+    
+    - name: Check service health
+      run: |
+        docker-compose ps
+        curl -f http://localhost:8081/health || exit 1
+    
+    - name: Run ${{ matrix.test-suite }} tests
+      run: |
+        if [ "${{ matrix.test-suite }}" == "basic" ]; then
+          python tests/integration/test_rag_pipeline.py
+        else
+          python tests/integration/test_advanced_pipeline.py
+        fi
+      env:
+        LIGHTRAG_API_URL: http://localhost:8081
+    
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results-${{ matrix.test-suite }}
+        path: test_report_*.json
+    
+    - name: Show logs on failure
+      if: failure()
+      run: |
+        echo "=== LightRAG Logs ==="
+        docker-compose logs lightrag
+        echo "=== PostgreSQL Logs ==="
+        docker-compose logs postgres
+        echo "=== Nginx Logs ==="
+        docker-compose logs nginx
+    
+    - name: Stop services
+      if: always()
+      run: docker-compose down -v
+
+  performance-tests:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event.inputs.test_mode == 'performance' || github.event.inputs.test_mode == 'all'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pytest numpy
+    
+    - name: Create .env file
+      run: |
+        cp .env.example .env.local
+        echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env.local
+    
+    - name: Start services with performance configuration
+      run: |
+        # Use production-like settings for performance testing
+        docker-compose up -d
+        sleep 45
+    
+    - name: Run performance benchmarks
+      run: |
+        ./scripts/run-integration-tests.sh performance
+      env:
+        LIGHTRAG_API_URL: http://localhost:8081
+    
+    - name: Analyze performance results
+      run: |
+        python -c "
+        import json
+        import glob
+        
+        # Find latest report
+        reports = glob.glob('test_report_*.json')
+        if reports:
+            with open(sorted(reports)[-1], 'r') as f:
+                data = json.load(f)
+            
+            if 'performance_metrics' in data:
+                metrics = data['performance_metrics']
+                print('Performance Summary:')
+                print('=' * 40)
+                
+                if 'benchmarks' in metrics:
+                    bench = metrics['benchmarks']
+                    if 'avg_query_latency' in bench:
+                        print(f'Avg Query Latency: {bench[\"avg_query_latency\"]:.3f}s')
+                        
+                        # Fail if latency is too high
+                        if bench['avg_query_latency'] > 5.0:
+                            print('WARNING: Query latency exceeds 5 seconds!')
+                            exit(1)
+        "
+    
+    - name: Upload performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-results
+        path: test_report_*.json
+    
+    - name: Stop services
+      if: always()
+      run: docker-compose down -v
+
+  docker-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Create .env file
+      run: |
+        cp .env.example .env.local
+        echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env.local
+    
+    - name: Build and run Docker tests
+      run: |
+        docker-compose -f docker-compose.yml -f docker-compose.test.yml up --build --abort-on-container-exit
+    
+    - name: Check test results
+      run: |
+        # Check exit code of test container
+        exit_code=$(docker-compose -f docker-compose.yml -f docker-compose.test.yml ps -q test-runner | xargs docker inspect -f '{{ .State.ExitCode }}')
+        exit $exit_code
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        docker-compose -f docker-compose.yml -f docker-compose.test.yml down -v
+
+  report-results:
+    needs: [integration-tests, performance-tests, docker-test]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+    
+    - name: Generate summary report
+      run: |
+        echo "# Test Results Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Check for test results
+        if [ -d "test-results-basic" ]; then
+          echo "## Basic Tests ✓" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -d "test-results-advanced" ]; then
+          echo "## Advanced Tests ✓" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -d "performance-results" ]; then
+          echo "## Performance Tests ✓" >> $GITHUB_STEP_SUMMARY
+          
+          # Parse and display performance metrics
+          if [ -f "performance-results/test_report_*.json" ]; then
+            python3 -c "
+            import json
+            import glob
+            
+            reports = glob.glob('performance-results/test_report_*.json')
+            if reports:
+                with open(reports[0], 'r') as f:
+                    data = json.load(f)
+                
+                print('### Performance Metrics')
+                if 'performance_metrics' in data:
+                    metrics = data['performance_metrics']
+                    if 'benchmarks' in metrics and 'avg_query_latency' in metrics['benchmarks']:
+                        print(f\"- Average Query Latency: {metrics['benchmarks']['avg_query_latency']:.3f}s\")
+            " >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "*Tests completed at $(date)*" >> $GITHUB_STEP_SUMMARY

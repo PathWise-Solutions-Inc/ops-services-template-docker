@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  test-runner:
+    build:
+      context: ./tests/integration
+      dockerfile: Dockerfile.test
+    networks:
+      - backend
+      - frontend
+    environment:
+      - LIGHTRAG_API_URL=http://lightrag:8080
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./tests/integration:/tests
+      - ./test-documents:/test-documents
+    depends_on:
+      - lightrag
+    command: python test_rag_pipeline.py
+
+networks:
+  frontend:
+    external: true
+    name: ops-services_frontend
+  backend:
+    external: true
+    name: ops-services_backend

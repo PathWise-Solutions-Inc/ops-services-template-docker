@@ -1,0 +1,400 @@
+{
+  "name": "RAG Agent Chat Interface",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "lastNode",
+        "options": {
+          "cors": true
+        }
+      },
+      "id": "webhook-chat-001",
+      "name": "Chat Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        400
+      ],
+      "webhookId": "rag-agent-chat"
+    },
+    {
+      "parameters": {
+        "resource": "session",
+        "operation": "get",
+        "sessionId": "={{$node['Chat Webhook'].json['session_id'] || $now.toMillis()}}",
+        "options": {
+          "createIfNotExists": true
+        }
+      },
+      "id": "session-001",
+      "name": "Get/Create Session",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        450,
+        400
+      ],
+      "credentials": {
+        "redis": {
+          "id": "redis-credentials",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build conversation context from session history\nconst sessionData = $node['Get/Create Session'].json;\nconst conversationHistory = sessionData.history || [];\nconst userMessage = $node['Chat Webhook'].json.message;\nconst contextWindow = 10; // Keep last 10 messages for context\n\n// Add user message to history\nconversationHistory.push({\n  role: 'user',\n  content: userMessage,\n  timestamp: new Date().toISOString()\n});\n\n// Trim history to context window\nif (conversationHistory.length > contextWindow * 2) {\n  conversationHistory.splice(0, conversationHistory.length - contextWindow * 2);\n}\n\nreturn {\n  session_id: sessionData.session_id || $now.toMillis(),\n  user_message: userMessage,\n  conversation_history: conversationHistory,\n  context_needed: true\n};"
+      },
+      "id": "context-001",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        650,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5678/webhook/search",
+        "method": "POST",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "query",
+              "value": "={{$node['Build Context'].json['user_message']}}"
+            },
+            {
+              "name": "search_type",
+              "value": "hybrid"
+            },
+            {
+              "name": "top_k",
+              "value": "5"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "search-001",
+      "name": "Hybrid RAG Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4",
+        "messages": {
+          "messageItems": [
+            {
+              "role": "system",
+              "content": "You are an intelligent assistant with access to a knowledge base. Use the provided search results to answer questions accurately. Always maintain context from the conversation history. If you cannot find relevant information in the search results, say so clearly."
+            },
+            {
+              "role": "assistant",
+              "content": "Previous conversation:\n{{$node['Build Context'].json['conversation_history']}}"
+            },
+            {
+              "role": "user",
+              "content": "Current question: {{$node['Build Context'].json['user_message']}}\n\nRelevant information from knowledge base:\n{{$node['Hybrid RAG Search'].json['results']}}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 1000,
+          "presencePenalty": 0.1,
+          "frequencyPenalty": 0.1
+        }
+      },
+      "id": "llm-001",
+      "name": "Generate Response",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        400
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract entities and intents for future context\nconst userMessage = $node['Build Context'].json['user_message'];\nconst aiResponse = $node['Generate Response'].json['message'];\n\n// Simple entity extraction (in production, use NER model)\nconst entities = [];\nconst patterns = [\n  /\\b[A-Z][a-z]+ [A-Z][a-z]+\\b/g, // Names\n  /\\b\\d{4}\\b/g, // Years\n  /\\$[\\d,]+/g, // Money\n  /\\b[A-Z]{2,}\\b/g // Acronyms\n];\n\npatterns.forEach(pattern => {\n  const matches = userMessage.match(pattern);\n  if (matches) {\n    entities.push(...matches);\n  }\n});\n\n// Detect intent (simplified)\nconst intents = [];\nif (userMessage.toLowerCase().includes('what')) intents.push('question');\nif (userMessage.toLowerCase().includes('how')) intents.push('explanation');\nif (userMessage.toLowerCase().includes('why')) intents.push('reasoning');\nif (userMessage.toLowerCase().includes('compare')) intents.push('comparison');\nif (userMessage.toLowerCase().includes('summarize')) intents.push('summary');\n\nreturn {\n  entities: [...new Set(entities)],\n  intents: intents,\n  topics: $node['Hybrid RAG Search'].json['results']?.map(r => r.metadata?.topic).filter(Boolean) || []\n};"
+      },
+      "id": "extract-001",
+      "name": "Extract Entities & Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "session",
+        "operation": "update",
+        "sessionId": "={{$node['Build Context'].json['session_id']}}",
+        "data": {
+          "history": "={{$node['Build Context'].json['conversation_history'].concat([{role: 'assistant', content: $node['Generate Response'].json['message'], timestamp: $now.toISO()}])}}",
+          "entities": "={{$node['Extract Entities & Intent'].json['entities']}}",
+          "intents": "={{$node['Extract Entities & Intent'].json['intents']}}",
+          "last_updated": "={{$now.toISO()}}"
+        },
+        "ttl": 3600
+      },
+      "id": "session-update-001",
+      "name": "Update Session",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        400
+      ],
+      "credentials": {
+        "redis": {
+          "id": "redis-credentials",
+          "name": "Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "session_id",
+              "value": "={{$node['Build Context'].json['session_id']}}"
+            },
+            {
+              "name": "message",
+              "value": "={{$node['Generate Response'].json['message']}}"
+            },
+            {
+              "name": "sources",
+              "value": "={{$node['Hybrid RAG Search'].json['sources']}}"
+            },
+            {
+              "name": "entities",
+              "value": "={{$node['Extract Entities & Intent'].json['entities']}}"
+            },
+            {
+              "name": "confidence",
+              "value": "={{$node['Hybrid RAG Search'].json['results'][0]?.score || 0}}"
+            }
+          ]
+        }
+      },
+      "id": "response-format-001",
+      "name": "Format Chat Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$node['Hybrid RAG Search'].json['results']?.length || 0}}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "check-results-001",
+      "name": "Check Search Results",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        850,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-3.5-turbo",
+        "messages": {
+          "messageItems": [
+            {
+              "role": "system",
+              "content": "You are a helpful assistant. The knowledge base search did not return relevant results for this query. Provide a general helpful response based on the conversation context."
+            },
+            {
+              "role": "user",
+              "content": "{{$node['Build Context'].json['user_message']}}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500
+        }
+      },
+      "id": "fallback-001",
+      "name": "Fallback Response",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        600
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Chat Webhook": {
+      "main": [
+        [
+          {
+            "node": "Get/Create Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get/Create Session": {
+      "main": [
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context": {
+      "main": [
+        [
+          {
+            "node": "Hybrid RAG Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hybrid RAG Search": {
+      "main": [
+        [
+          {
+            "node": "Check Search Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Search Results": {
+      "main": [
+        [
+          {
+            "node": "Generate Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fallback Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Response": {
+      "main": [
+        [
+          {
+            "node": "Extract Entities & Intent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback Response": {
+      "main": [
+        [
+          {
+            "node": "Update Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Entities & Intent": {
+      "main": [
+        [
+          {
+            "node": "Update Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Session": {
+      "main": [
+        [
+          {
+            "node": "Format Chat Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "any"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "id": "rag-template",
+      "name": "RAG Template"
+    },
+    {
+      "id": "chat-agent",
+      "name": "Chat Agent"
+    }
+  ],
+  "triggerCount": 0,
+  "updatedAt": "2025-08-17T23:40:00.000Z",
+  "versionId": "1"
+}
