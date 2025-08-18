@@ -33,7 +33,7 @@ interface SearchResult {
   content: string;
   score: number;
   metadata: any;
-  source: string;
+  source?: string;
 }
 
 const SearchInterface: React.FC<SearchInterfaceProps> = ({ onAlert }) => {
