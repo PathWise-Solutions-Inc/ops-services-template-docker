@@ -240,6 +240,29 @@ services:
       timeout: 5s
       retries: 3
 
+  # Frontend React Application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ops-frontend
+    restart: unless-stopped
+    ports:
+      - "3002:80"
+    networks:
+      - frontend
+    depends_on:
+      - nginx
+      - lightrag
+    environment:
+      - REACT_APP_API_URL=http://localhost/api
+      - REACT_APP_LIGHTRAG_URL=http://localhost:8081
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # Prometheus for monitoring
   prometheus:
     image: prom/prometheus:latest

@@ -1,0 +1,17 @@
+# Development Dockerfile with hot-reloading
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install dependencies first for better caching
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Copy source code
+COPY . .
+
+# Expose React development server port
+EXPOSE 3000
+
+# Start development server
+CMD ["npm", "start"]
