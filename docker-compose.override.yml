@@ -63,7 +63,7 @@ services:
       - ./frontend/src:/app/src:ro
       - ./frontend/public:/app/public:ro
     ports:
-      - "3002:3000"
+      - "3005:3000"
     environment:
       - REACT_APP_API_URL=http://localhost/api
       - REACT_APP_LIGHTRAG_URL=http://localhost:8081
